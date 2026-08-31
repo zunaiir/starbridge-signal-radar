@@ -1,80 +1,13 @@
 import os
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from flask import Flask, jsonify, request, Response
 
 app = Flask(__name__)
-
-DEMO_SIGNALS = [
-    {
-        "company": "VIDIZMO",
-        "domain": "vidizmo.ai",
-        "signal_type": "Multiple public-sector sales hires",
-        "signal": "Expanding its Public Safety sales organization across Account Executive, Strategic AE, Federal, State & Local, Justice/Prosecution and business development roles.",
-        "signal_date": "2026-08-10",
-        "score": 98,
-        "why_now": "A multi-role public-sector hiring push usually means the team needs repeatable territory prioritization and pipeline creation fast, not more manual agency research.",
-        "starbridge_angle": "Give incoming public-sector sellers prioritized agencies, procurement context, verified buyers and pre-RFP signals from day one.",
-        "target_persona": "VP Sales / Head of Public Safety Sales",
-        "source_url": "https://builtin.com/job/public-sector-account-executive/10598699",
-        "source_name": "Built In",
-    },
-    {
-        "company": "Envisio",
-        "domain": "envisio.com",
-        "signal_type": "Public-sector AE hiring",
-        "signal": "Hiring a Senior Account Executive – Public Sector to drive new customer acquisition and expand its public-sector footprint.",
-        "signal_date": "2026-08-01",
-        "score": 96,
-        "why_now": "Envisio is explicitly investing in public-sector new-logo acquisition, creating an immediate need for better account selection and earlier buying signals.",
-        "starbridge_angle": "Help the new seller focus on in-market agencies and act on pre-RFP buying signals instead of prospecting a broad public-sector TAM.",
-        "target_persona": "CRO / VP Sales",
-        "source_url": "https://envisio.breezy.hr/p/4622052ea6b3-senior-account-executive-public-sector",
-        "source_name": "Envisio Careers",
-    },
-    {
-        "company": "Elastic",
-        "domain": "elastic.co",
-        "signal_type": "New SLED territory coverage",
-        "signal": "Posted a Public Sector Account Executive – SLED Texas role focused on selling into state and local government.",
-        "signal_date": "2026-08-31",
-        "score": 94,
-        "why_now": "Adding dedicated SLED coverage creates a near-term need to identify which agencies in the territory are actually showing demand and which stakeholders matter.",
-        "starbridge_angle": "Turn a broad Texas SLED territory into an intent-ranked book of agencies with buying context and actionable outreach triggers.",
-        "target_persona": "VP Public Sector / SLED Sales Leader",
-        "source_url": "https://jobera.com/job/elastic-public-sector-account-executive-sled-texas-6544c9d9/",
-        "source_name": "Jobera",
-    },
-    {
-        "company": "Commvault",
-        "domain": "commvault.com",
-        "signal_type": "Multiple SLED openings",
-        "signal": "Current careers activity includes multiple SLED Account Executive roles plus SLED sales leadership coverage.",
-        "signal_date": "2026-08-01",
-        "score": 92,
-        "why_now": "Adding both sellers and leadership suggests a scaled SLED motion where territory intelligence and consistent signal-based prospecting can compound across the team.",
-        "starbridge_angle": "Give every SLED rep the same system for prioritizing agencies, identifying procurement context and acting on timely buying signals.",
-        "target_persona": "SVP / VP Public Sector",
-        "source_url": "https://www.commvault.com/careers/jobs",
-        "source_name": "Commvault Careers",
-    },
-    {
-        "company": "Freshworks",
-        "domain": "freshworks.com",
-        "signal_type": "Higher-ed SLED expansion",
-        "signal": "Hiring an Enterprise SLED Account Executive specifically to expand Freshworks' footprint within higher-education institutions.",
-        "signal_date": "2026-08-21",
-        "score": 90,
-        "why_now": "A dedicated higher-ed expansion role needs a fast way to distinguish institutions with active IT priorities from the rest of the market.",
-        "starbridge_angle": "Surface universities showing relevant IT buying signals, map the buying committee and give the seller a timely reason to engage.",
-        "target_persona": "VP Public Sector / SLED Sales Leader",
-        "source_url": "https://jobs.smartrecruiters.com/Freshworks/744000144138719-account-executive-enterprise-sled-",
-        "source_name": "Freshworks Careers",
-    },
-]
 
 QUERIES = [
     '"SLED Account Executive" software',
@@ -188,22 +121,22 @@ footer div{color:var(--purple-dark);font-weight:700}
 <main><div class="shell">
 <header class="topbar"><div class="brand"><div class="mark">✦</div><div><div class="eyebrow">BUILT FOR STARBRIDGE</div><h1>Signal Radar</h1></div></div><div class="top-actions"><button class="ghost" id="exportBtn">Export CSV</button><button class="scan" id="scanBtn">Run live scan</button></div></header>
 <section class="hero"><div><div class="pill"><span class="dot"></span> Public-sector GTM expansion monitor</div><h2>Find the companies building<br>public-sector sales teams <em>right now.</em></h2><p>Detect fresh SLED, government and higher-ed expansion signals — then turn each one into a clear reason for Starbridge to reach out.</p></div><div class="control-card"><label>Signal window</label><div class="segmented" id="rangeButtons"><button data-range="week">7 days</button><button class="active" data-range="month">30 days</button><button data-range="year">1 year</button></div><label>Minimum intent score <strong id="minLabel">85</strong></label><input id="minScore" type="range" min="75" max="95" value="85"><div class="fineprint">Live scan searches the public web and ranks only evidence-backed vendor expansion signals.</div><div class="warning" id="warning"></div></div></section>
-<section class="stats"><div><span>Sources scanned</span><strong id="scanned">137</strong></div><div><span>High-intent companies</span><strong id="count">0</strong></div><div><span>Average score</span><strong id="avg">—</strong></div><div><span>Mode</span><strong class="mode" id="mode">preview</strong></div></section>
-<section class="section-head"><div><span class="kicker">FRESH SIGNALS</span><h3>Who Starbridge should look at next</h3></div><span class="updated" id="updated">Updated Preview data</span></section>
+<section class="stats"><div><span>Sources scanned</span><strong id="scanned">0</strong></div><div><span>High-intent companies</span><strong id="count">0</strong></div><div><span>Average score</span><strong id="avg">—</strong></div><div><span>Mode</span><strong class="mode" id="mode">ready</strong></div></section>
+<section class="section-head"><div><span class="kicker">FRESH SIGNALS</span><h3>Who Starbridge should look at next</h3></div><span class="updated" id="updated">Not scanned yet</span></section>
 <section class="feed" id="feed"></section>
 <footer><div>✦ Signal Radar</div><span>Concept built for Starbridge · public-web signals only</span></footer>
 </div></main>
 <script>
-const initialSignals = __DEMO__;
+const initialSignals = [];
 let signals = initialSignals;
 let range = 'month';
 let minimum = 85;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function scoreLabel(score){return score>=95?'Hot':score>=85?'High intent':'Watch'}
 function filtered(){return [...signals].filter(s=>Number(s.score)>=minimum).sort((a,b)=>b.score-a.score)}
-function render(){const rows=filtered();document.getElementById('count').textContent=rows.length;document.getElementById('avg').textContent=rows.length?Math.round(rows.reduce((a,b)=>a+Number(b.score),0)/rows.length):'—';document.getElementById('feed').innerHTML=rows.length?rows.map((s,i)=>`<article class="signal-card"><div class="score-col"><div class="score-ring"><strong>${esc(s.score)}</strong><span>/100</span></div><div class="heat">${scoreLabel(Number(s.score))}</div></div><div class="content-col"><div class="company-row"><div class="company-avatar">${esc((s.company||'?').slice(0,1).toUpperCase())}</div><div><h4>${esc(s.company)}</h4><span>${esc(s.domain)}</span></div><div class="tag">${esc(s.signal_type)}</div></div><div class="signal-copy">${esc(s.signal)}</div><div class="two-col"><div class="insight"><span>WHY NOW</span><p>${esc(s.why_now)}</p></div><div class="insight accent"><span>STARBRIDGE ANGLE</span><p>${esc(s.starbridge_angle)}</p></div></div><div class="meta-row"><div><span>Target</span><strong>${esc(s.target_persona)}</strong></div><div><span>Signal date</span><strong>${esc(s.signal_date||'Recent')}</strong></div><div><span>Evidence</span><a href="${esc(s.source_url)}" target="_blank" rel="noreferrer">${esc(s.source_name)} ↗</a></div></div></div><div class="card-actions"><button onclick="copyText(${i},'angle',this)">Copy angle</button><button onclick="copyText(${i},'brief',this)">Copy brief</button></div></article>`).join(''):'<div class="empty">No signals above this score. Lower the threshold or run a wider scan.</div>'}
+function render(){const rows=filtered();document.getElementById('count').textContent=rows.length;document.getElementById('avg').textContent=rows.length?Math.round(rows.reduce((a,b)=>a+Number(b.score),0)/rows.length):'—';document.getElementById('feed').innerHTML=rows.length?rows.map((s,i)=>`<article class="signal-card"><div class="score-col"><div class="score-ring"><strong>${esc(s.score)}</strong><span>/100</span></div><div class="heat">${scoreLabel(Number(s.score))}</div></div><div class="content-col"><div class="company-row"><div class="company-avatar">${esc((s.company||'?').slice(0,1).toUpperCase())}</div><div><h4>${esc(s.company)}</h4><span>${esc(s.domain)}</span></div><div class="tag">${esc(s.signal_type)}</div></div><div class="signal-copy">${esc(s.signal)}</div><div class="two-col"><div class="insight"><span>WHY NOW</span><p>${esc(s.why_now)}</p></div><div class="insight accent"><span>STARBRIDGE ANGLE</span><p>${esc(s.starbridge_angle)}</p></div></div><div class="meta-row"><div><span>Target</span><strong>${esc(s.target_persona)}</strong></div><div><span>Signal date</span><strong>${esc(s.signal_date||'Recent')}</strong></div><div><span>Evidence</span><a href="${esc(s.source_url)}" target="_blank" rel="noreferrer">${esc(s.source_name)} ↗</a></div></div></div><div class="card-actions"><button onclick="copyText(${i},'angle',this)">Copy angle</button><button onclick="copyText(${i},'brief',this)">Copy brief</button></div></article>`).join(''):'<div class="empty">No live results yet. Click <strong>Run live scan</strong> to search the web now.</div>'}
 async function copyText(i,type,btn){const s=filtered()[i];const text=type==='angle'?s.starbridge_angle:`${s.company}\nSignal: ${s.signal}\nWhy now: ${s.why_now}\nAngle: ${s.starbridge_angle}\nSource: ${s.source_url}`;await navigator.clipboard.writeText(text);const old=btn.textContent;btn.textContent='Copied';setTimeout(()=>btn.textContent=old,1200)}
-async function runScan(){const btn=document.getElementById('scanBtn'),warn=document.getElementById('warning');btn.disabled=true;btn.textContent='Scanning the market…';warn.style.display='none';try{const res=await fetch('/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({range})});const data=await res.json();signals=data.signals||[];document.getElementById('mode').textContent=data.mode||'live';document.getElementById('scanned').textContent=data.scanned??0;document.getElementById('updated').textContent='Updated '+new Date(data.generated_at||Date.now()).toLocaleString();if(data.warning){warn.textContent=data.warning;warn.style.display='block'}render()}catch(e){warn.textContent='Scan failed: '+e.message;warn.style.display='block'}finally{btn.disabled=false;btn.textContent='Run live scan'}}
+async function runScan(){const btn=document.getElementById('scanBtn'),warn=document.getElementById('warning');btn.disabled=true;btn.textContent='Scanning the market…';warn.style.display='none';try{const res=await fetch('/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({range})});const data=await res.json();if(!res.ok){throw new Error(data.error||data.warning||('HTTP '+res.status))}signals=data.signals||[];document.getElementById('mode').textContent=data.mode||'live';document.getElementById('scanned').textContent=data.scanned??0;document.getElementById('updated').textContent='Updated '+new Date(data.generated_at||Date.now()).toLocaleString();if(data.warning){warn.textContent=data.warning;warn.style.display='block'}render()}catch(e){signals=[];document.getElementById('mode').textContent='error';document.getElementById('scanned').textContent='0';warn.textContent='Live scan failed: '+e.message;warn.style.display='block';render()}finally{btn.disabled=false;btn.textContent='Run live scan'}}
 function exportCSV(){const rows=filtered();const headers=['Company','Domain','Score','Signal Type','Signal','Signal Date','Why Now','Starbridge Angle','Target Persona','Source URL'];const vals=rows.map(s=>[s.company,s.domain,s.score,s.signal_type,s.signal,s.signal_date,s.why_now,s.starbridge_angle,s.target_persona,s.source_url]);const q=v=>'"'+String(v??'').replaceAll('"','""')+'"';const csv=[headers,...vals].map(r=>r.map(q).join(',')).join('\n');const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='starbridge-signal-radar.csv';a.click();URL.revokeObjectURL(url)}
 document.querySelectorAll('[data-range]').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('[data-range]').forEach(x=>x.classList.remove('active'));b.classList.add('active');range=b.dataset.range}));document.getElementById('minScore').addEventListener('input',e=>{minimum=Number(e.target.value);document.getElementById('minLabel').textContent=minimum;render()});document.getElementById('scanBtn').addEventListener('click',runScan);document.getElementById('exportBtn').addEventListener('click',exportCSV);render();
 </script>
@@ -222,27 +155,6 @@ def _domain_from_url(url):
         return ""
 
 
-def tavily_search(query, time_range):
-    key = os.environ.get("TAVILY_API_KEY")
-    resp = requests.post(
-        "https://api.tavily.com/search",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json={
-            "query": query,
-            "search_depth": "basic",
-            "topic": "general",
-            "time_range": time_range,
-            "country": "united states",
-            "max_results": 8,
-            "include_answer": False,
-            "include_raw_content": False,
-        },
-        timeout=20,
-    )
-    resp.raise_for_status()
-    return resp.json().get("results", [])
-
-
 def extract_output_text(data):
     if isinstance(data.get("output_text"), str):
         return data["output_text"]
@@ -256,17 +168,90 @@ def extract_output_text(data):
     return "\n".join(chunks)
 
 
+def _window_dates(time_range):
+    now = datetime.now(timezone.utc)
+    days = {"week": 7, "month": 30, "year": 365}[time_range]
+    cutoff = now - timedelta(days=days)
+    return now.date().isoformat(), cutoff.date().isoformat(), days
+
+
+def search_tavily(time_range):
+    """Search the live public web for public-sector GTM expansion signals."""
+    api_key = os.environ.get("TAVILY_API_KEY")
+    if not api_key:
+        raise RuntimeError("TAVILY_API_KEY is missing in Vercel.")
+
+    tavily_range = {"week": "week", "month": "month", "year": "year"}[time_range]
+
+    def run_query(query):
+        resp = requests.post(
+            "https://api.tavily.com/search",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "query": query,
+                "search_depth": "basic",
+                "topic": "general",
+                "time_range": tavily_range,
+                "max_results": 10,
+                "include_answer": False,
+                "include_raw_content": False,
+                "country": "united states",
+            },
+            timeout=25,
+        )
+        if not resp.ok:
+            raise RuntimeError(f"Tavily API {resp.status_code} for {query}: {resp.text[:300]}")
+        payload = resp.json()
+        return query, payload.get("results", [])
+
+    all_results = []
+    seen_urls = set()
+
+    # Run all discovery queries in parallel so a live scan stays fast on Vercel.
+    with ThreadPoolExecutor(max_workers=len(QUERIES)) as pool:
+        futures = [pool.submit(run_query, q) for q in QUERIES]
+        for future in as_completed(futures):
+            query, items = future.result()
+            for item in items:
+                url = (item.get("url") or "").strip()
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                all_results.append({
+                    "query": query,
+                    "title": item.get("title", ""),
+                    "url": url,
+                    "content": item.get("content", ""),
+                    "relevance": item.get("score", 0),
+                })
+
+    all_results.sort(key=lambda x: float(x.get("relevance") or 0), reverse=True)
+    return all_results[:60]
+
+
 def classify_with_openai(results, time_range):
-    candidates = []
-    for i, r in enumerate(results[:40], start=1):
-        if not r.get("url") or not r.get("title"):
-            continue
-        candidates.append({
-            "id": i,
-            "title": r.get("title", ""),
-            "url": r.get("url", ""),
-            "snippet": r.get("content", ""),
-        })
+    """Turn Tavily search results into a ranked Starbridge prospect feed."""
+    today, cutoff, days = _window_dates(time_range)
+
+    if not results:
+        return []
+
+    # Keep enough context to be useful without making the LLM call huge.
+    source_pack = []
+    valid_urls = set()
+    for idx, item in enumerate(results[:50], start=1):
+        valid_urls.add(item["url"])
+        source_pack.append(
+            f"SOURCE {idx}\n"
+            f"Search query: {item['query']}\n"
+            f"Title: {item['title']}\n"
+            f"URL: {item['url']}\n"
+            f"Search relevance: {item['relevance']}\n"
+            f"Snippet: {item['content'][:1200]}"
+        )
 
     schema = {
         "type": "object",
@@ -288,7 +273,11 @@ def classify_with_openai(results, time_range):
                         "source_url": {"type": "string"},
                         "source_name": {"type": "string"},
                     },
-                    "required": ["company", "domain", "signal_type", "signal", "signal_date", "score", "why_now", "starbridge_angle", "target_persona", "source_url", "source_name"],
+                    "required": [
+                        "company", "domain", "signal_type", "signal", "signal_date",
+                        "score", "why_now", "starbridge_angle", "target_persona",
+                        "source_url", "source_name"
+                    ],
                     "additionalProperties": False,
                 },
             }
@@ -297,28 +286,45 @@ def classify_with_openai(results, time_range):
         "additionalProperties": False,
     }
 
-    prompt = f"""You are a GTM intelligence analyst working for Starbridge, which sells AI sales intelligence to companies selling into U.S. state/local government, K-12, and higher education.
+    prompt = f"""You are the prospect-scoring layer for Starbridge Signal Radar.
 
-Analyze the search results below and identify companies that are CURRENTLY investing in public-sector GTM. Strong signals include: multiple SLED/public-sector sales openings, a new public-sector sales leader, dedicated state/local or higher-ed expansion, or an explicit public-sector go-to-market buildout.
+TODAY: {today}
+SCAN WINDOW: {cutoff} through {today} ({days} days)
 
-Rules:
-- Only include B2B vendors that plausibly sell products/services into U.S. government or education.
-- Exclude government agencies, schools, recruiting firms, job boards, Starbridge itself, and generic articles.
-- Use only evidence in the supplied results. Never invent a company, date, role, or URL.
-- source_url MUST be copied exactly from one supplied candidate URL.
-- Prefer signals inside the requested {time_range} window.
-- Dedupe companies. If several results support one company, summarize the strongest signal.
-- Return at most 12 companies, sorted highest score first.
+Starbridge sells AI sales intelligence to B2B vendors that sell into U.S. state/local government, K-12, and higher education.
 
-Scoring:
-95-100: multiple public-sector sales hires or explicit major GTM expansion.
-85-94: fresh dedicated SLED/public-sector/higher-ed seller or sales leadership hire.
-75-84: strong but less direct expansion signal.
-Below 75: omit.
+Tavily has already searched the live web. Your ONLY job is to analyze the search results below and identify companies showing credible, recent evidence that they are investing in or expanding public-sector GTM.
 
-For each result, explain the timing in plain English and give a concise Starbridge sales angle. Target persona should be the likely economic/functional buyer at the vendor (for example CRO, VP Public Sector, Head of SLED Sales), not the government buyer.
+QUALIFY:
+- B2B software/services vendors that plausibly sell to U.S. government, K-12, or higher education.
+- Fresh signals such as SLED/public-sector AE hiring, multiple public-sector sales openings, a new public-sector leader, a new government/education vertical, or explicit public-sector expansion.
 
-Search candidates:\n{json.dumps(candidates, indent=2)}"""
+EXCLUDE:
+- Government agencies, schools/universities themselves, recruiters/staffing firms, generic articles, Starbridge, and companies where the public-sector angle is speculative.
+- Sources that do not actually support the claimed signal.
+
+EVIDENCE RULES:
+- You may ONLY use URLs contained in the provided Tavily results.
+- source_url MUST exactly match one of those URLs.
+- Never invent a company, role, URL, or date.
+- If the snippet does not contain an exact posting/publication date, use \"Current\" for signal_date rather than inventing one.
+- Prefer official company career pages/announcements when available; otherwise reputable job boards are fine.
+- Dedupe companies and keep only the strongest signal per company.
+
+SCORING:
+95-100 = multiple fresh public-sector hires, leadership + hiring, or obvious major GTM buildout.
+90-94 = strong dedicated SLED/public-sector/higher-ed expansion signal.
+85-89 = credible dedicated public-sector sales investment.
+Below 85 = omit.
+
+OUTPUT:
+Return up to 12 companies sorted by score descending.
+Keep every field concise and sales-ready.
+why_now = the likely GTM problem created by the signal.
+starbridge_angle = the specific reason Starbridge is relevant now.
+target_persona = likely buyer at the vendor (CRO, VP Public Sector, Head of SLED Sales, etc.).
+
+TAVILY RESULTS:\n\n""" + "\n\n---\n\n".join(source_pack)
 
     resp = requests.post(
         "https://api.openai.com/v1/responses",
@@ -328,29 +334,51 @@ Search candidates:\n{json.dumps(candidates, indent=2)}"""
         },
         json={
             "model": os.environ.get("OPENAI_MODEL", "gpt-5.6-luna"),
+            "reasoning": {"effort": "low"},
             "input": prompt,
             "text": {
                 "format": {
                     "type": "json_schema",
-                    "name": "public_sector_gtm_signals",
+                    "name": "starbridge_live_signals",
                     "strict": True,
                     "schema": schema,
                 }
             },
         },
-        timeout=60,
+        timeout=120,
     )
     if not resp.ok:
-        raise RuntimeError(f"OpenAI error {resp.status_code}: {resp.text[:300]}")
-    text = extract_output_text(resp.json())
+        raise RuntimeError(f"OpenAI API {resp.status_code}: {resp.text[:500]}")
+
+    data = resp.json()
+    text = extract_output_text(data)
+    if not text:
+        raise RuntimeError("OpenAI returned no structured output.")
+
     parsed = json.loads(text)
-    return parsed.get("signals", [])
+    cleaned = []
+    seen_companies = set()
+    for signal in parsed.get("signals", []):
+        company_key = (signal.get("company") or "").strip().lower()
+        source_url = (signal.get("source_url") or "").strip()
+        if not company_key or company_key in seen_companies:
+            continue
+        if source_url not in valid_urls:
+            continue
+        if int(signal.get("score", 0)) < 85:
+            continue
+        if not signal.get("domain"):
+            signal["domain"] = _domain_from_url(source_url)
+        seen_companies.add(company_key)
+        cleaned.append(signal)
+
+    cleaned.sort(key=lambda x: int(x.get("score", 0)), reverse=True)
+    return cleaned[:12]
 
 
 @app.get("/")
 def home():
-    page = HTML.replace("__DEMO__", json.dumps(DEMO_SIGNALS).replace("</", "<\\/"))
-    return Response(page, mimetype="text/html")
+    return Response(HTML, mimetype="text/html")
 
 
 @app.post("/scan")
@@ -360,37 +388,50 @@ def scan():
     if time_range not in {"week", "month", "year"}:
         time_range = "month"
 
-    if body.get("demo") is True or not os.environ.get("TAVILY_API_KEY") or not os.environ.get("OPENAI_API_KEY"):
-        return jsonify({"mode": "demo", "scanned": 137, "signals": DEMO_SIGNALS, "generated_at": _now_iso()})
+    missing = []
+    if not os.environ.get("TAVILY_API_KEY"):
+        missing.append("TAVILY_API_KEY")
+    if not os.environ.get("OPENAI_API_KEY"):
+        missing.append("OPENAI_API_KEY")
+    if missing:
+        return jsonify({
+            "mode": "error",
+            "error": "Missing Vercel environment variable(s): " + ", ".join(missing) + ". Add them under Settings → Environment Variables, then redeploy.",
+            "generated_at": _now_iso(),
+        }), 500
 
     try:
-        raw = []
-        for query in QUERIES:
-            raw.extend(tavily_search(query, time_range))
-
-        seen = set()
-        unique = []
-        for r in raw:
-            url = r.get("url")
-            if url and url not in seen:
-                seen.add(url)
-                unique.append(r)
-
-        signals = classify_with_openai(unique, time_range)
-        return jsonify({"mode": "live", "scanned": len(unique), "signals": signals, "generated_at": _now_iso()})
+        search_results = search_tavily(time_range)
+        signals = classify_with_openai(search_results, time_range)
+        warning = None
+        if not signals:
+            warning = "The live scan completed but found no qualifying signals. Try a wider window."
+        return jsonify({
+            "mode": "live",
+            "scanned": len(search_results),
+            "signals": signals,
+            "generated_at": _now_iso(),
+            "warning": warning,
+        })
     except Exception as exc:
         return jsonify({
-            "mode": "fallback",
+            "mode": "error",
             "scanned": 0,
-            "signals": DEMO_SIGNALS,
+            "signals": [],
             "generated_at": _now_iso(),
-            "warning": f"Live scan failed; showing demo results. {str(exc)[:240]}",
-        })
+            "error": str(exc)[:700],
+        }), 500
 
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True})
+    return jsonify({
+        "ok": True,
+        "app_version": "live-tavily-v2",
+        "tavily_configured": bool(os.environ.get("TAVILY_API_KEY")),
+        "openai_configured": bool(os.environ.get("OPENAI_API_KEY")),
+        "model": os.environ.get("OPENAI_MODEL", "gpt-5.6-luna"),
+    })
 
 
 if __name__ == "__main__":
