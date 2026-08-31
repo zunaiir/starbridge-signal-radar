@@ -1,5 +1,6 @@
 import os
 import json
+import random
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -9,15 +10,28 @@ from flask import Flask, jsonify, request, Response
 
 app = Flask(__name__)
 
-QUERIES = [
+QUERY_BANK = [
     '"SLED Account Executive" software',
     '"Public Sector Account Executive" SaaS',
     '"State and Local Government" "Account Executive" software',
     '"Higher Education" "Account Executive" SaaS',
     '"VP Public Sector" software sales',
+    '"Head of Public Sector" software sales',
     '"Public Sector Sales Director" software',
+    '"SLED Sales Director" software',
+    '"public sector sales" hiring SaaS',
+    '"government sales" "Account Executive" software',
+    '"education sales" "Account Executive" software',
+    '"state local education" sales software hiring',
+    '"public sector" "business development" SaaS',
+    '"government vertical" software launch',
+    '"public sector practice" software launch',
+    '"public sector" "regional sales manager" software',
+    '"SLED" "regional sales manager" software',
+    '"public sector" "sales team" expansion software',
 ]
 
+QUERIES_PER_SCAN = 6
 HTML = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -119,8 +133,8 @@ footer div{color:var(--purple-dark);font-weight:700}
 </head>
 <body>
 <main><div class="shell">
-<header class="topbar"><div class="brand"><div class="mark">✦</div><div><div class="eyebrow">BUILT FOR STARBRIDGE</div><h1>Signal Radar</h1></div></div><div class="top-actions"><button class="ghost" id="exportBtn">Export CSV</button><button class="scan" id="scanBtn">Run live scan</button></div></header>
-<section class="hero"><div><div class="pill"><span class="dot"></span> Public-sector GTM expansion monitor</div><h2>Find the companies building<br>public-sector sales teams <em>right now.</em></h2><p>Detect fresh SLED, government and higher-ed expansion signals — then turn each one into a clear reason for Starbridge to reach out.</p></div><div class="control-card"><label>Signal window</label><div class="segmented" id="rangeButtons"><button data-range="week">7 days</button><button class="active" data-range="month">30 days</button><button data-range="year">1 year</button></div><label>Minimum intent score <strong id="minLabel">85</strong></label><input id="minScore" type="range" min="75" max="95" value="85"><div class="fineprint">Live scan searches the public web and ranks only evidence-backed vendor expansion signals.</div><div class="warning" id="warning"></div></div></section>
+<header class="topbar"><div class="brand"><div class="mark">✦</div><div><div class="eyebrow">BUILT FOR STARBRIDGE</div><h1>Signal Radar</h1></div></div><div class="top-actions"><button class="ghost" id="resetBtn">Reset history</button><button class="ghost" id="exportBtn">Export CSV</button><button class="scan" id="scanBtn">Run live scan</button></div></header>
+<section class="hero"><div><div class="pill"><span class="dot"></span> Public-sector GTM expansion monitor</div><h2>Find the companies building<br>public-sector sales teams <em>right now.</em></h2><p>Detect fresh SLED, government and higher-ed expansion signals — then turn each one into a clear reason for Starbridge to reach out.</p></div><div class="control-card"><label>Signal window</label><div class="segmented" id="rangeButtons"><button data-range="week">7 days</button><button class="active" data-range="month">30 days</button><button data-range="year">1 year</button></div><label>Minimum intent score <strong id="minLabel">85</strong></label><input id="minScore" type="range" min="75" max="95" value="85"><div class="fineprint">Each scan rotates search patterns and excludes companies already shown in this browser, so the feed keeps moving into the long tail.</div><div class="warning" id="warning"></div></div></section>
 <section class="stats"><div><span>Sources scanned</span><strong id="scanned">0</strong></div><div><span>High-intent companies</span><strong id="count">0</strong></div><div><span>Average score</span><strong id="avg">—</strong></div><div><span>Mode</span><strong class="mode" id="mode">ready</strong></div></section>
 <section class="section-head"><div><span class="kicker">FRESH SIGNALS</span><h3>Who Starbridge should look at next</h3></div><span class="updated" id="updated">Not scanned yet</span></section>
 <section class="feed" id="feed"></section>
@@ -131,14 +145,18 @@ const initialSignals = [];
 let signals = initialSignals;
 let range = 'month';
 let minimum = 85;
+const HISTORY_KEY = 'starbridgeSignalRadarSeenV1';
+function getSeen(){try{return JSON.parse(localStorage.getItem(HISTORY_KEY)||'[]')}catch(e){return []}}
+function addSeen(rows){const existing=getSeen();const map=new Map(existing.map(x=>[(x.company||'').toLowerCase(),x]));rows.forEach(s=>{const key=(s.company||'').toLowerCase();if(key)map.set(key,{company:s.company,domain:s.domain||''})});localStorage.setItem(HISTORY_KEY,JSON.stringify([...map.values()].slice(-250)))}
+function resetHistory(){localStorage.removeItem(HISTORY_KEY);document.getElementById('warning').textContent='Scan history cleared. The next scan may include companies you saw before.';document.getElementById('warning').style.display='block'}
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function scoreLabel(score){return score>=95?'Hot':score>=85?'High intent':'Watch'}
 function filtered(){return [...signals].filter(s=>Number(s.score)>=minimum).sort((a,b)=>b.score-a.score)}
 function render(){const rows=filtered();document.getElementById('count').textContent=rows.length;document.getElementById('avg').textContent=rows.length?Math.round(rows.reduce((a,b)=>a+Number(b.score),0)/rows.length):'—';document.getElementById('feed').innerHTML=rows.length?rows.map((s,i)=>`<article class="signal-card"><div class="score-col"><div class="score-ring"><strong>${esc(s.score)}</strong><span>/100</span></div><div class="heat">${scoreLabel(Number(s.score))}</div></div><div class="content-col"><div class="company-row"><div class="company-avatar">${esc((s.company||'?').slice(0,1).toUpperCase())}</div><div><h4>${esc(s.company)}</h4><span>${esc(s.domain)}</span></div><div class="tag">${esc(s.signal_type)}</div></div><div class="signal-copy">${esc(s.signal)}</div><div class="two-col"><div class="insight"><span>WHY NOW</span><p>${esc(s.why_now)}</p></div><div class="insight accent"><span>STARBRIDGE ANGLE</span><p>${esc(s.starbridge_angle)}</p></div></div><div class="meta-row"><div><span>Target</span><strong>${esc(s.target_persona)}</strong></div><div><span>Signal date</span><strong>${esc(s.signal_date||'Recent')}</strong></div><div><span>Evidence</span><a href="${esc(s.source_url)}" target="_blank" rel="noreferrer">${esc(s.source_name)} ↗</a></div></div></div><div class="card-actions"><button onclick="copyText(${i},'angle',this)">Copy angle</button><button onclick="copyText(${i},'brief',this)">Copy brief</button></div></article>`).join(''):'<div class="empty">No live results yet. Click <strong>Run live scan</strong> to search the web now.</div>'}
 async function copyText(i,type,btn){const s=filtered()[i];const text=type==='angle'?s.starbridge_angle:`${s.company}\nSignal: ${s.signal}\nWhy now: ${s.why_now}\nAngle: ${s.starbridge_angle}\nSource: ${s.source_url}`;await navigator.clipboard.writeText(text);const old=btn.textContent;btn.textContent='Copied';setTimeout(()=>btn.textContent=old,1200)}
-async function runScan(){const btn=document.getElementById('scanBtn'),warn=document.getElementById('warning');btn.disabled=true;btn.textContent='Scanning the market…';warn.style.display='none';try{const res=await fetch('/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({range})});const data=await res.json();if(!res.ok){throw new Error(data.error||data.warning||('HTTP '+res.status))}signals=data.signals||[];document.getElementById('mode').textContent=data.mode||'live';document.getElementById('scanned').textContent=data.scanned??0;document.getElementById('updated').textContent='Updated '+new Date(data.generated_at||Date.now()).toLocaleString();if(data.warning){warn.textContent=data.warning;warn.style.display='block'}render()}catch(e){signals=[];document.getElementById('mode').textContent='error';document.getElementById('scanned').textContent='0';warn.textContent='Live scan failed: '+e.message;warn.style.display='block';render()}finally{btn.disabled=false;btn.textContent='Run live scan'}}
+async function runScan(){const btn=document.getElementById('scanBtn'),warn=document.getElementById('warning');btn.disabled=true;btn.textContent='Scanning for new companies…';warn.style.display='none';try{const seen_companies=getSeen();const res=await fetch('/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({range,seen_companies})});const data=await res.json();if(!res.ok){throw new Error(data.error||data.warning||('HTTP '+res.status))}signals=data.signals||[];addSeen(signals);document.getElementById('mode').textContent=data.mode||'live';document.getElementById('scanned').textContent=data.scanned??0;document.getElementById('updated').textContent='Updated '+new Date(data.generated_at||Date.now()).toLocaleString();if(data.warning){warn.textContent=data.warning;warn.style.display='block'}render()}catch(e){signals=[];document.getElementById('mode').textContent='error';document.getElementById('scanned').textContent='0';warn.textContent='Live scan failed: '+e.message;warn.style.display='block';render()}finally{btn.disabled=false;btn.textContent='Run live scan'}}
 function exportCSV(){const rows=filtered();const headers=['Company','Domain','Score','Signal Type','Signal','Signal Date','Why Now','Starbridge Angle','Target Persona','Source URL'];const vals=rows.map(s=>[s.company,s.domain,s.score,s.signal_type,s.signal,s.signal_date,s.why_now,s.starbridge_angle,s.target_persona,s.source_url]);const q=v=>'"'+String(v??'').replaceAll('"','""')+'"';const csv=[headers,...vals].map(r=>r.map(q).join(',')).join('\n');const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='starbridge-signal-radar.csv';a.click();URL.revokeObjectURL(url)}
-document.querySelectorAll('[data-range]').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('[data-range]').forEach(x=>x.classList.remove('active'));b.classList.add('active');range=b.dataset.range}));document.getElementById('minScore').addEventListener('input',e=>{minimum=Number(e.target.value);document.getElementById('minLabel').textContent=minimum;render()});document.getElementById('scanBtn').addEventListener('click',runScan);document.getElementById('exportBtn').addEventListener('click',exportCSV);render();
+document.querySelectorAll('[data-range]').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('[data-range]').forEach(x=>x.classList.remove('active'));b.classList.add('active');range=b.dataset.range}));document.getElementById('minScore').addEventListener('input',e=>{minimum=Number(e.target.value);document.getElementById('minLabel').textContent=minimum;render()});document.getElementById('scanBtn').addEventListener('click',runScan);document.getElementById('exportBtn').addEventListener('click',exportCSV);document.getElementById('resetBtn').addEventListener('click',resetHistory);render();
 </script>
 </body></html>'''
 
@@ -210,9 +228,12 @@ def search_tavily(time_range):
     all_results = []
     seen_urls = set()
 
-    # Run all discovery queries in parallel so a live scan stays fast on Vercel.
-    with ThreadPoolExecutor(max_workers=len(QUERIES)) as pool:
-        futures = [pool.submit(run_query, q) for q in QUERIES]
+    # Rotate discovery patterns every scan. We keep the Tavily cost at six
+    # basic searches while preventing the same six queries from dominating.
+    selected_queries = random.SystemRandom().sample(QUERY_BANK, QUERIES_PER_SCAN)
+
+    with ThreadPoolExecutor(max_workers=len(selected_queries)) as pool:
+        futures = [pool.submit(run_query, q) for q in selected_queries]
         for future in as_completed(futures):
             query, items = future.result()
             for item in items:
@@ -232,7 +253,7 @@ def search_tavily(time_range):
     return all_results[:60]
 
 
-def classify_with_openai(results, time_range):
+def classify_with_openai(results, time_range, seen_companies=None):
     """Turn Tavily search results into a ranked Starbridge prospect feed."""
     today, cutoff, days = _window_dates(time_range)
 
@@ -286,6 +307,14 @@ def classify_with_openai(results, time_range):
         "additionalProperties": False,
     }
 
+    seen_companies = seen_companies or []
+    seen_names = {(x.get("company") or "").strip().lower() for x in seen_companies if isinstance(x, dict)}
+    seen_domains = {(x.get("domain") or "").strip().lower() for x in seen_companies if isinstance(x, dict)}
+    seen_block = "\n".join(
+        f"- {(x.get('company') or '').strip()} | {(x.get('domain') or '').strip()}"
+        for x in seen_companies[-250:] if isinstance(x, dict)
+    ) or "- None"
+
     prompt = f"""You are the prospect-scoring layer for Starbridge Signal Radar.
 
 TODAY: {today}
@@ -323,6 +352,11 @@ Keep every field concise and sales-ready.
 why_now = the likely GTM problem created by the signal.
 starbridge_angle = the specific reason Starbridge is relevant now.
 target_persona = likely buyer at the vendor (CRO, VP Public Sector, Head of SLED Sales, etc.).
+
+ALREADY SHOWN TO THIS USER — DO NOT RETURN ANY OF THESE COMPANIES OR DOMAINS:
+{seen_block}
+
+If the evidence pool only contains companies in that exclusion list, return an empty signals array instead of repeating them.
 
 TAVILY RESULTS:\n\n""" + "\n\n---\n\n".join(source_pack)
 
@@ -369,6 +403,9 @@ TAVILY RESULTS:\n\n""" + "\n\n---\n\n".join(source_pack)
             continue
         if not signal.get("domain"):
             signal["domain"] = _domain_from_url(source_url)
+        signal_domain = (signal.get("domain") or "").strip().lower()
+        if company_key in seen_names or (signal_domain and signal_domain in seen_domains):
+            continue
         seen_companies.add(company_key)
         cleaned.append(signal)
 
@@ -400,12 +437,17 @@ def scan():
             "generated_at": _now_iso(),
         }), 500
 
+    seen_companies = body.get("seen_companies", [])
+    if not isinstance(seen_companies, list):
+        seen_companies = []
+    seen_companies = [x for x in seen_companies[-250:] if isinstance(x, dict)]
+
     try:
         search_results = search_tavily(time_range)
-        signals = classify_with_openai(search_results, time_range)
+        signals = classify_with_openai(search_results, time_range, seen_companies)
         warning = None
         if not signals:
-            warning = "The live scan completed but found no qualifying signals. Try a wider window."
+            warning = "No unseen qualifying companies were found in this pass. Try another scan (queries rotate), widen the time window, or reset history."
         return jsonify({
             "mode": "live",
             "scanned": len(search_results),
@@ -427,7 +469,7 @@ def scan():
 def health():
     return jsonify({
         "ok": True,
-        "app_version": "live-tavily-v2",
+        "app_version": "live-tavily-v3-new-company-rotation",
         "tavily_configured": bool(os.environ.get("TAVILY_API_KEY")),
         "openai_configured": bool(os.environ.get("OPENAI_API_KEY")),
         "model": os.environ.get("OPENAI_MODEL", "gpt-5.6-luna"),
